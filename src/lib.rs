@@ -1,348 +1,249 @@
 #![no_std]
 
-extern crate byteorder;
+extern crate bitflags;
 extern crate embedded_hal as hal;
 
-use byteorder::{ByteOrder, BigEndian};
+use bitflags::bitflags;
 use hal::blocking::i2c;
 
-pub const INA3221_ADDR: u8 = 0x40;
+pub const PCA9633_ADDR: u8 = 0x60;
 
-/// Different options for the A0 address selection pin
-pub enum A0 {
-    Gnd = 0x40,
-    Vs = 0x41,
-    Sda = 0x42,
-    Scl = 0x43
+bitflags! {
+    struct Mode1: u8 {
+        const Sleep     = 0b0001_0000;
+        const Sub1      = 0b0000_1000;
+        const Sub2      = 0b0000_0100;
+        const Sub3      = 0b0000_0010;
+        const AllCall   = 0b0000_0001;
+    }
 }
 
-impl A0 {
-    /// INA3221 address corresponding to the A0 option
-    pub fn address(self) -> u8 {
+bitflags! {
+    struct Mode2: u8 {
+        const DmBlink   = 0b0010_0000;
+        const Invert    = 0b0001_0000;
+        const Och       = 0b0000_1000;
+        const OutDrv    = 0b0000_0100;
+        const OutNe1    = 0b0000_0010;
+        const OutNe0    = 0b0000_0001;
+    }
+}
+
+enum LedOut {
+    /// LED is fully off
+    FullyOff,
+    /// LED id fully on
+    FullyOn,
+    /// LED brightness is controlled through its PWMx
+    Pwm,
+    /// LED brightness is controlled through its PWMx and group duty/blinking.
+    PwmGroup
+}
+
+trait Channels {
+    fn get_offs(self) -> u8;
+}
+
+enum Channels4 {
+    _1 = 0,
+    _2 = 1,
+    _3 = 2,
+    _4 = 3
+}
+impl Channels for Channels4 {
+    fn get_offs(self) -> u8 {
         self as u8
     }
 }
 
-pub enum Register {
-    Configuration = 0x00,
-    ShuntVoltage1 = 0x01,
-    BusVoltage1 = 0x02,
-    ShuntVoltage2 = 0x03,
-    BusVoltage2 = 0x04,
-    ShuntVoltage3 = 0x05,
-    BusVoltage3 = 0x06,
-    CriticalLimit1 = 0x07,
-    WarningLimit1 = 0x08,
-    CriticalLimit2 = 0x09,
-    WarningLimit2 = 0x0A,
-    CriticalLimit3 = 0x0B,
-    WarningLimit3 = 0x0C,
-    ShuntVoltageSum = 0x0D,
-    ShuntVoltageSumLimit = 0x0E,
-    MaskEnable = 0x0F,
-    PowerValidUpper = 0x10,
-    PowerValidLower = 0x11,
-    ManufacturerId = 0xFE,
-    DieId = 0xFF
+enum Channels8 {
+    _1 = 0,
+    _2 = 1,
+    _3 = 2,
+    _4 = 3,
+    _5 = 4,
+    _6 = 5,
+    _7 = 6,
+    _8 = 7
 }
-
-/// Set number of samples for average
-#[derive(Copy, Clone)]
-pub enum AveragingMode {
-    /// 1 Sample (default)
-    N1 = 0,
-    /// 4 Samples
-    N4 = 1,
-    /// 16 Samples
-    N16 = 2,
-    /// 64 Samples
-    N64 = 3,
-    /// 128 Samples
-    N128 = 4,
-    /// 256 Samples
-    N256 = 5,
-    /// 512 Samples
-    N512 = 6,
-    /// 1024 Samples
-    N1024 = 7
-}
-
-/// Set the ADC conversion time
-#[derive(Copy, Clone)]
-pub enum ConversionTime {
-    /// 140 μs
-    T140Us = 0,
-    /// 204 μs
-    T204Us = 1,
-    /// 332 μs
-    T332Us = 2,
-    /// 588 μs
-    T588Us = 3,
-    /// 1.1 ms (default)
-    T1100Us = 4,
-    /// 2.116 ms
-    T2116Us = 5,
-    /// 4.156 ms
-    T4156Us = 6,
-    /// 8.244 ms
-    T8244Us = 7
-}
-
-/// Operation mode
-#[derive(Copy, Clone)]
-pub enum OperationMode {
-    /// Power-down
-    PowerDown = 0,
-    /// Shunt voltage, single-shot (triggered)
-    ShuntSingle = 1,
-    /// Bus voltage, single-shot (triggered)
-    BusSingle = 2,
-    /// Shunt and bus, single-shot (triggered)
-    ShuntBusSingle = 3,
-    /// Shunt voltage, continuous
-    ShuntContinuous = 5,
-    /// Bus voltage, continuous
-    BusContinuous = 6,
-    /// Shunt and bus, continuous (default)
-    ShuntBusContinuous = 7
+impl Channels for Channels8 {
+    fn get_offs(self) -> u8 {
+        self as u8
+    }
 }
 
 pub struct Config {
-    /// Enable channel 1
-    ch1_en: bool,
-    /// Enable channel 2
-    ch2_en: bool,
-    /// Enable channel 3
-    ch3_en: bool,
-    /// Averaging mode
-    avg: AveragingMode,
-    /// Bus-Voltage conversion time
-    vbus_ct: ConversionTime,
-    /// Shunt-Voltage conversion time
-    vsh_ct: ConversionTime,
-    /// Operating mode
-    mode: OperationMode
+    mode1: Mode1,
+    mode2: Mode2
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
-            ch1_en: true,
-            ch2_en: true,
-            ch3_en: true,
-            avg: AveragingMode::N1,
-            vbus_ct: ConversionTime::T1100Us,
-            vsh_ct: ConversionTime::T1100Us,
-            mode: OperationMode::ShuntBusContinuous
+            mode1: Mode1::AllCall | Mode1::Sleep,
+            mode2: Mode2::OutDrv | Mode2::OutNe0
         }
     }
 }
 
 impl Config {
-    pub fn average(self, avg: AveragingMode) -> Self {
-        Self {
-            avg,
-            .. self
+    pub fn new() -> Self {
+        Config {
+            mode1: Mode1::AllCall,
+            mode2: Mode2::OutDrv | Mode2::OutNe0
         }
     }
 
-    pub fn vbus_ct(self, ct: ConversionTime) -> Self {
-        Self {
-            vbus_ct: ct,
-            .. self
-        }
+    pub fn sub1(&mut self, enable: bool) -> &mut Config {
+        self.mode1 |= Mode1::Sub1;
+        self
     }
 
-    pub fn vsh_ct(self, ct: ConversionTime) -> Self {
-        Self {
-            vsh_ct: ct,
-            .. self
-        }
+    pub fn sub2(&mut self, enable: bool) -> &mut Config {
+        self.mode1 |= Mode1::Sub2;
+        self
     }
 
-    pub fn mode(self, mode: OperationMode) -> Self {
-        Self {
-            mode,
-            .. self
-        }
+    pub fn sub3(&mut self, enable: bool) -> &mut Config {
+        self.mode1 |= Mode1::Sub3;
+        self
     }
 
-    pub fn ch1_en(self, en: bool) -> Self {
-        Self {
-            ch1_en: en,
-            .. self
-        }
+    pub fn all_call(&mut self, enable: bool) -> &mut Config {
+        self.mode1 |= Mode1::AllCall;
+        self
     }
 
-    pub fn ch2_en(self, en: bool) -> Self {
-        Self {
-            ch2_en: en,
-            .. self
-        }
-    }
-
-    pub fn ch3_en(self, en: bool) -> Self {
-        Self {
-            ch3_en: en,
-            .. self
-        }
-    }
-
-
-}
-
-impl Config {
-    pub(crate) fn to_register(&self) -> u16 {
-        let mut conf = self.mode as u16
-            | (self.vsh_ct as u16) << 3
-            | (self.vbus_ct as u16) << 6
-            | (self.avg as u16) << 9;
-        if self.ch1_en {
-            conf |= 1 << 12;
-        }
-        if self.ch2_en {
-            conf |= 1 << 13;
-        }
-        if self.ch3_en {
-            conf |= 1 << 14;
-        }
-        conf
+    pub fn sleep(&mut self, enable: bool) -> &mut Config {
+        self.mode1 |= Mode1::Sleep;
+        self
     }
 }
 
-pub struct INA3221<I2C> {
+const AUTOINCR_NONE: u8     = 0b0000_0000;
+const AUTOINCR_ALL: u8      = 0b1000_0000;
+const AUTOINCR_BRIGHT: u8   = 0b1010_0000;
+const AUTOINCR_GLOBAL: u8   = 0b1100_0000;
+const AUTOINCR_GLBR: u8     = 0b1110_0000;
+
+trait PCA963X<I2C, E>
+    where I2C: i2c::Write<Error = E> + i2c::Read<Error = E> {
+
+    const MODE1: u8;
+    const MODE2: u8;
+    const PWM1: u8;
+    const GRPPWM: u8;
+    const GRPFREQ: u8;
+    const LEDOUT1: u8;
+    const SUBADR1: u8;
+    const SUBADR2: u8;
+    const SUBADR3: u8;
+    const ALLCALLADR: u8;
+
+    type Channels: Channels;
+
+    /// Read a register
+    fn read(&mut self, register: u8) -> Result<u8, E>;
+
+    /// Write a register
+    fn write(&mut self, register: u8, value: u8) -> Result<(), E>;
+
+    /// Write config
+    fn write_config(&mut self, conf: Config) -> Result<(), E>;
+
+    /// Write channel pwm
+    fn write_duty(&mut self, ch: Self::Channels, value: u8) -> Result<(), E> {
+        self.write(AUTOINCR_NONE | Self::PWM1 + ch.get_offs(), value)
+    }
+
+    /// Write channel output mode
+    fn write_out(&mut self, ch: Self::Channels, out: LedOut) -> Result<(), E> {
+        let offs = ch.get_offs();
+        let mut ledout = self.read(Self::LEDOUT1 + (offs / 4u8))?;
+        ledout &= 0x03 << (offs % 4u8)*2;
+        ledout |= (out as u8) << (offs % 4u8)*2;
+        self.write(Self::LEDOUT1 + (offs/ 4u8), ledout)
+    }
+
+    /// Write group duty cycle
+    fn write_group_duty(&mut self, value: u8) -> Result<(), E> {
+        self.write(Self::GRPPWM, value)
+    }
+    /// Write group frequency. Not used if `DmBlink` flag is not set in config.
+    fn write_group_freq(&mut self, value: u8) -> Result<(), E> {
+        self.write(Self::GRPFREQ, value)
+    }
+
+    /// Write sub address 1. Requires `Sub1` flag in config to be set.
+    fn write_sub_address1(&mut self, addr: u8) -> Result<(), E> {
+        self.write(Self::SUBADR1, addr << 1)
+    }
+
+    /// Write sub address 2. Requires `Sub2` flag in config to be set.
+    fn write_sub_address2(&mut self, addr: u8) -> Result<(), E> {
+        self.write(Self::SUBADR2, addr << 1)
+    }
+
+    /// Write sub address 3. Requires `Sub3` flag in config to be set.
+    fn write_sub_address3(&mut self, addr: u8) -> Result<(), E> {
+        self.write(Self::SUBADR3, addr << 1)
+    }
+
+    /// Write all call address. Requires `AllCall` flag in config to be set.
+    fn write_all_call_address1(&mut self, addr: u8) -> Result<(), E> {
+        self.write(Self::ALLCALLADR, addr << 1)
+    }
+}
+
+pub struct PCA9633<I2C> {
     i2c: I2C,
     address: u8
 }
 
-/// Channel measurements
-/// Note: Raw values, see datasheet for conversion
-pub struct Channel {
-    /// Bus voltage
-    bus_voltage: u16,
-    /// Shunt voltage
-    shunt_voltage: i16
-}
-
-impl Channel {
-    /// Convert raw shunt-voltage to a current by scaling with the shunt resistance
-    pub fn current(&self, shunt: f32) -> f32 {
-        // 40 uV / LSB, I = V/R
-        ((self.shunt_voltage >> 3) as f32 * 40e-6f32) / shunt
-    }
-
-    /// Convert raw bus-voltage
-    pub fn voltage(&self) -> f32 {
-        // 8mV / LSB
-        (self.bus_voltage >> 3) as f32 * 8e-3f32
-    }
-}
-
-impl<I2C, E> INA3221<I2C>
+impl<I2C, E> PCA963X<I2C, E> for PCA9633<I2C>
     where I2C: i2c::Write<Error = E> + i2c::Read<Error = E> {
+    const MODE1: u8 = 0x00;
+    const MODE2: u8 = 0x01;
+    const PWM1: u8  = 0x03;
+    const GRPPWM: u8 = 0x06;
+    const GRPFREQ: u8 = 0x07;
+    const LEDOUT1: u8 = 0x08;
+    const SUBADR1: u8 = 0x09;
+    const SUBADR2: u8 = 0x0A;
+    const SUBADR3: u8 = 0x0B;
+    const ALLCALLADR: u8 = 0x0C;
 
-    /// Create new INA3221
-    pub fn new(i2c: I2C, address: u8) -> INA3221<I2C> {
-        INA3221 {
+    type Channels = Channels4;
+
+    fn read(&mut self, register: u8) -> Result<u8, E> {
+        let mut buf = [0u8];
+        self.i2c.write(self.address, &[register])?;
+        self.i2c.read(self.address, &mut buf)?;
+        Ok(buf[0])
+    }
+
+    fn write(&mut self, register: u8, value: u8) -> Result<(), E> {
+        self.i2c.write(self.address, &[register, value])
+    }
+
+    fn write_config(&mut self, conf: Config) -> Result<(), E> {
+        self.i2c.write(self.address, &[AUTOINCR_ALL | Self::MODE1, conf.mode1.bits, conf.mode2.bits])
+    }
+}
+
+impl<I2C, E> PCA9633<I2C>
+    where I2C: i2c::Write<Error = E> + i2c::Read<Error = E>{
+
+    pub fn new(i2c: I2C, address: u8) -> Self {
+        PCA9633 {
             i2c,
             address
         }
     }
 
-    /// Create new INA3221 and change its configuration (might fail)
-    pub fn new_config(i2c: I2C, address: u8, conf: Config) -> Result<INA3221<I2C>, E>{
-        let mut ina = INA3221 {
-            i2c,
-            address
-        };
-        ina.write_config(Some(conf))?;
-        Ok(ina)
+    pub fn new_config(i2c: I2C, address: u8, conf: Config) -> Result<Self, E> {
+        let mut pca = Self::new(i2c, address);
+        pca.write_config(conf)?;
+        Ok(pca)
     }
-
-    /// Read a channel's bus and shunt voltage
-    pub fn read_channel(&mut self, index: u8) -> Result<Channel, E> {
-        let mut buf: [u8; 4] = [0x00; 4];
-        self.i2c.write(self.address, &[Register::ShuntVoltage1 as u8 + (index % 3u8)*2u8])?;
-        self.i2c.read(self.address, &mut buf)?;
-        Ok(Channel {
-            shunt_voltage: BigEndian::read_i16(&buf[0..=1]),
-            bus_voltage: BigEndian::read_u16(&buf[2..=3])
-        })
-    }
-
-    /// Read channel 1-3
-    pub fn read_all_channels(&mut self) -> Result<[Channel; 3], E> {
-        let mut buf: [u8; 4*3] = [0x00; 4*3];
-        self.i2c.write(self.address, &[Register::ShuntVoltage1 as u8])?;
-        self.i2c.read(self.address, &mut buf)?;
-        Ok([Channel {
-            shunt_voltage: BigEndian::read_i16(&buf[0..=1]),
-            bus_voltage: BigEndian::read_u16(&buf[2..=3])
-        },Channel {
-            shunt_voltage: BigEndian::read_i16(&buf[4..=5]),
-            bus_voltage: BigEndian::read_u16(&buf[6..=7])
-        },Channel {
-            shunt_voltage: BigEndian::read_i16(&buf[8..=9]),
-            bus_voltage: BigEndian::read_u16(&buf[10..=11])
-        }])
-    }
-
-    /// Read Shunt-Voltage Sum
-    pub fn read_sum(&mut self) -> Result<u16, E> {
-        self.read(Register::ShuntVoltageSum)
-    }
-
-    /// Read CVRF (Conversion ready flag) from Mask/Enable register
-    /// Useful for single-shot conversion
-    pub fn read_cvrf(&mut self) -> Result<bool, E> {
-        let mask = self.read(Register::MaskEnable)?;
-        Ok(mask & 0x0001u16 != 0)
-    }
-
-    /// Read a register
-    pub fn read(&mut self, register: Register) -> Result<u16, E> {
-        let mut buf: [u8; 2] = [0x00; 2];
-        self.i2c.write(self.address, &[register as u8])?;
-        self.i2c.read(self.address, &mut buf)?;
-        Ok(BigEndian::read_u16(&buf))
-    }
-
-    /// Set the alert and warning limit for a channel
-    pub fn write_channel_limit(&mut self, index: u8, alert: u16, warning: u16) -> Result<(), E>{
-        let mut buf = [0x00u8; 5];
-        buf[0] = Register::CriticalLimit1 as u8 + (index % 3u8)*2u8;
-        BigEndian::write_u16_into(&[alert, warning], &mut buf[1..]);
-        self.i2c.write(self.address, &buf)
-    }
-
-    /// Write upper/lower power valid registers
-    pub fn write_power_valid(&mut self, upper: u16, lower: u16) -> Result<(), E>{
-        let mut buf = [0x00u8; 5];
-        buf[0] = Register::PowerValidUpper as u8;
-        BigEndian::write_u16_into(&[upper, lower], &mut buf[1..]);
-        self.i2c.write(self.address, &buf)
-    }
-
-    /// Write config register
-    /// Using None will reset config to default by setting the RST bit
-    pub fn write_config(&mut self, conf: Option<Config>) -> Result<(), E>{
-        self.write(Register::Configuration, match conf {
-            Some(cfg) => cfg.to_register(),
-            None => 1u16 << 15
-        })
-    }
-
-    /// Write Shunt-Voltage Sum-Limit register
-    pub fn write_sum_limit(&mut self, limit: i16) -> Result<(), E>{
-        self.write(Register::ShuntVoltageSumLimit, limit as u16)
-    }
-
-    /// Write a register
-    pub fn write(&mut self, register: Register, value: u16) -> Result<(), E> {
-        let mut buf: [u8; 3] = [0x00; 3];
-        buf[0] = register as u8;
-        BigEndian::write_u16(&mut buf, value);
-        self.i2c.write(self.address, &buf)
-    }
-
 }
