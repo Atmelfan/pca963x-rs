@@ -2,7 +2,7 @@ extern crate linux_embedded_hal as hal;
 extern crate pca963x;
 
 use hal::I2cdev;
-use pca963x::{Config, LedOut, PCA9633, PCA9633_ADDR, PCA963X, Address};
+use pca963x::{Address, Config, LedOut, PCA9633, PCA9633_ADDR, PCA963X};
 
 fn main() {
     let i2c_bus = I2cdev::new("/dev/i2c-1").unwrap();

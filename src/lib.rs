@@ -12,10 +12,7 @@ pub enum Address {
     /// 8 pin package, fixed address of 0x62
     _8Pin,
     /// 10 pin package with A0 and A1 pins
-    _10Pin {
-        a0: bool,
-        a1: bool,
-    },
+    _10Pin { a0: bool, a1: bool },
     /// 16 pin package with A0-A6 pins
     _16Pin {
         a0: bool,
@@ -34,7 +31,7 @@ impl Address {
     pub fn address(self) -> u8 {
         match self {
             Address::_8Pin => 0x62u8,
-            Address::_10Pin { a0, a1 } => 0x60 | (a0 as u8) << 0 | (a1 as u8) << 1,
+            Address::_10Pin { a0, a1 } => 0x60 | (a0 as u8) | (a1 as u8) << 1,
             Address::_16Pin {
                 a0,
                 a1,
@@ -44,8 +41,7 @@ impl Address {
                 a5,
                 a6,
             } => {
-                0x00u8
-                    | (a0 as u8) << 0
+                (a0 as u8)
                     | (a1 as u8) << 1
                     | (a2 as u8) << 2
                     | (a3 as u8) << 3
@@ -259,8 +255,8 @@ where
     fn write_out(&mut self, ch: Self::Channels, out: LedOut) -> Result<(), E> {
         let offs = ch.get_offs();
         let mut ledout = self.read(Self::LEDOUT1 + (offs / 4u8))?;
-        ledout &= 0x03 << (offs % 4u8) * 2;
-        ledout |= (out as u8) << (offs % 4u8) * 2;
+        ledout &= 0x03 << ((offs % 4u8) * 2);
+        ledout |= (out as u8) << ((offs % 4u8) * 2);
         self.write(Self::LEDOUT1 + (offs / 4u8), ledout)
     }
 

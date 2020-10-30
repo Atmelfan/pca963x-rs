@@ -1,0 +1,38 @@
+# Based on https://github.com/actions-rs/meta/blob/master/recipes/quickstart.md
+#
+# While our "example" application has the platform-specific code,
+# for simplicity we are compiling and testing everything on the Ubuntu environment only.
+# For multi-OS testing see the `cross.yml` workflow.
+
+on: [push, pull_request]
+
+name: Coverage
+
+jobs:
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Install nightly toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          override: true
+
+      - name: Install Tarpaulin
+        run: |
+          cargo install cargo-tarpaulin
+
+      - name: Generate code coverage
+        run: |
+          cargo +nightly tarpaulin --verbose --all-features --workspace --timeout 120 --out Xml
+
+      - name: Upload to codecov.io
+        uses: codecov/codecov-action@v1
+        with:
+          # token: ${{secrets.CODECOV_TOKEN}} # not required for public repos
+          fail_ci_if_error: true
