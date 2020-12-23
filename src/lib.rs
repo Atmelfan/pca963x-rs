@@ -1,5 +1,6 @@
 #![no_std]
 #![allow(non_upper_case_globals)]
+#![allow(unused_imports)]
 
 extern crate bitflags;
 extern crate embedded_hal as hal;
@@ -477,11 +478,11 @@ macro_rules! device {
         }
 
         #[cfg(feature="embedded-hal-pwm")]
-        impl<I2C, E, T: PCA963X<I2C, E>> hal::Pwm for T
+        impl<I2C, E> hal::Pwm for $name<I2C>
         where
             I2C: i2c::Write<Error = E> + i2c::Read<Error = E>
         {
-            type Channel = T::Channels;
+            type Channel = <$name<I2C> as PCA963X<I2C, E>>::Channels;
             type Time = ();
             type Duty = u8;
 
@@ -497,7 +498,7 @@ macro_rules! device {
                 ()
             }
 
-            fn get_duty(&self, channel: Self::Channel) -> Self::Duty {
+            fn get_duty(&self, _channel: Self::Channel) -> Self::Duty {
                 //self.read_duty(channel).unwrap_or(0)
                 0
             }
