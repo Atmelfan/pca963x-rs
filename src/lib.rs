@@ -7,6 +7,9 @@ extern crate embedded_hal as hal;
 use bitflags::bitflags;
 use hal::blocking::i2c;
 
+#[cfg(feature = "embedded-hal-pwm")]
+use hal::Pwm;
+
 #[derive(Copy, Clone, Debug)]
 pub enum Address {
     /// 8 pin package, fixed address of 0x62
@@ -87,15 +90,21 @@ pub enum LedOut {
     PwmGroup,
 }
 
+/// Internal trait
 pub trait Channels {
     fn get_offs(self) -> u8;
 }
 
+/// 4 channels
 #[derive(Copy, Clone, Debug)]
 pub enum Channels4 {
+    /// Channel 1
     _1 = 0,
+    /// Channel 2
     _2 = 1,
+    /// Channel 3
     _3 = 2,
+    /// Channel 4
     _4 = 3,
 }
 
@@ -105,15 +114,24 @@ impl Channels for Channels4 {
     }
 }
 
+/// 8 channels
 #[derive(Copy, Clone, Debug)]
 pub enum Channels8 {
+    /// Channel 1
     _1 = 0,
+    /// Channel 2
     _2 = 1,
+    /// Channel 3
     _3 = 2,
+    /// Channel 4
     _4 = 3,
+    /// Channel 5
     _5 = 4,
+    /// Channel 6
     _6 = 5,
+    /// Channel 7
     _7 = 6,
+    /// Channel 8
     _8 = 7,
 }
 
@@ -123,6 +141,7 @@ impl Channels for Channels8 {
     }
 }
 
+/// Output drive mode
 #[derive(Copy, Clone, Debug)]
 pub enum OutputDrive {
     /// When OE = 1 (output drivers not enabled), LEDn = 0
@@ -135,6 +154,25 @@ pub enum OutputDrive {
     OutNe10 = 0x02,
 }
 
+/// Output change mode
+#[derive(Copy, Clone, Debug)]
+pub enum Och {
+    /// Outputs change on STOP command.
+    ChangeOnStop,
+    /// Outputs change on ACK.
+    ChangeOnAck,
+}
+
+// Output change mode
+#[derive(Copy, Clone, Debug)]
+pub enum OutDrv {
+    /// The 4 LED outputs are configured with an open-drain structure.
+    OpenDrain,
+    /// The 4 LED outputs are configured with a totem pole structure.
+    TotemPole,
+}
+
+/// Driver configuration registers
 #[derive(Copy, Clone, Debug)]
 pub struct Config {
     mode1: Mode1,
@@ -151,6 +189,7 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Default configs but with sleep-mode disabled
     pub fn new() -> Self {
         Config {
             mode1: Mode1::AllCall,
@@ -158,59 +197,146 @@ impl Config {
         }
     }
 
-    pub fn sub1(&mut self, enable: bool) -> &mut Config {
+    /// Enable subaddress 1
+    pub fn sub1(mut self, enable: bool) -> Config {
         self.mode1.set(Mode1::Sub1, enable);
         self
     }
 
-    pub fn sub2(&mut self, enable: bool) -> &mut Config {
+    /// Enable subaddress 2
+    pub fn sub2(mut self, enable: bool) -> Config {
         self.mode1.set(Mode1::Sub2, enable);
         self
     }
 
-    pub fn sub3(&mut self, enable: bool) -> &mut Config {
+    /// Enable subaddress 3
+    pub fn sub3(mut self, enable: bool) -> Config {
         self.mode1.set(Mode1::Sub3, enable);
         self
     }
 
-    pub fn all_call(&mut self, enable: bool) -> &mut Config {
+    /// Enable all call address
+    pub fn all_call(mut self, enable: bool) -> Config {
         self.mode1.set(Mode1::AllCall, enable);
         self
     }
 
-    pub fn sleep(&mut self, enable: bool) -> &mut Config {
+    /// Put into sleep mode (default on)
+    pub fn sleep(mut self, enable: bool) -> Config {
         self.mode1.set(Mode1::Sleep, enable);
         self
     }
 
-    pub fn blink(&mut self, enable: bool) -> &mut Config {
+    /// Determines the function of group control registers (see datasheet).
+    pub fn blink(mut self, enable: bool) -> Config {
         self.mode2.set(Mode2::DmBlink, enable);
         self
     }
 
-    pub fn invert(&mut self, enable: bool) -> &mut Config {
+    /// Output logic inverted
+    pub fn invert(mut self, enable: bool) -> Config {
         self.mode2.set(Mode2::Invert, enable);
         self
     }
 
-    pub fn out_drv(&mut self, enable: bool) -> &mut Config {
-        self.mode2.set(Mode2::OutDrv, enable);
+    /// Control when outputs are updated
+    pub fn och(mut self, change: Och) -> Config {
+        match change {
+            Och::ChangeOnStop => self.mode2.set(Mode2::Och, false),
+            Och::ChangeOnAck => self.mode2.set(Mode2::Och, true),
+        }
         self
     }
 
-    pub fn outne(&mut self, out: OutputDrive) -> &mut Config {
+    /// Control output driver structure
+    pub fn out_drv(mut self, outdrv: OutDrv) -> Config {
+        match outdrv {
+            OutDrv::OpenDrain => self.mode2.set(Mode2::OutDrv, false),
+            OutDrv::TotemPole => self.mode2.set(Mode2::OutDrv, true),
+        }
+        self
+    }
+
+    /// Control output idle behaviour
+    pub fn outne(mut self, out: OutputDrive) -> Config {
         match out {
             OutputDrive::OutNe00 => self.mode2.remove(Mode2::OutNe1 | Mode2::OutNe0),
             OutputDrive::OutNe01 => {
                 self.mode2.insert(Mode2::OutNe0);
-                self.mode2.remove(Mode2::OutNe0);
+                self.mode2.remove(Mode2::OutNe1);
             }
             OutputDrive::OutNe10 => {
                 self.mode2.remove(Mode2::OutNe0);
-                self.mode2.insert(Mode2::OutNe0);
+                self.mode2.insert(Mode2::OutNe1);
             }
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod test_config {
+    use super::*;
+
+    #[test]
+    fn test_default() {
+        let config: Config = Default::default();
+        assert_eq!(config.mode1.bits, 0b0001_0001); // Per 7.3.1
+        assert_eq!(config.mode2.bits, 0b0000_0101); // Per 7.3.2
+    }
+
+    #[test]
+    fn test_sub() {
+        let config: Config = Config::default().sub1(true).sub2(true).sub3(true);
+        assert_eq!(config.mode1.bits, 0b0001_1111); // Per 7.3.1
+    }
+
+    #[test]
+    fn test_all_call() {
+        let config: Config = Config::default().all_call(false);
+        assert_eq!(config.mode1.bits, 0b0001_0000); // Per 7.3.1
+        let config2: Config = Config::default().all_call(true);
+        assert_eq!(config2.mode1.bits, 0b0001_0001); // Per 7.3.1
+    }
+
+    #[test]
+    fn test_sleep() {
+        let config: Config = Config::default().sleep(false);
+        assert_eq!(config.mode1.bits, 0b0000_0001); // Per 7.3.1
+    }
+
+    #[test]
+    fn test_blink() {
+        let config: Config = Config::default().blink(true);
+        assert_eq!(config.mode2.bits, 0b0010_0101); // Per 7.3.1
+    }
+
+    #[test]
+    fn test_invert() {
+        let config: Config = Config::default().invert(true);
+        assert_eq!(config.mode2.bits, 0b0001_0101); // Per 7.3.1
+    }
+
+    #[test]
+    fn test_och() {
+        let config: Config = Config::default().och(Och::ChangeOnAck);
+        assert_eq!(config.mode2.bits, 0b0000_1101); // Per 7.3.1
+    }
+
+    #[test]
+    fn test_outdrv() {
+        let config: Config = Config::default().out_drv(OutDrv::OpenDrain);
+        assert_eq!(config.mode2.bits, 0b0000_0001); // Per 7.3.1
+    }
+
+    #[test]
+    fn test_outne() {
+        let mut config: Config = Config::default().outne(OutputDrive::OutNe00);
+        assert_eq!(config.mode2.bits, 0b0000_0100); // Per 7.3.1
+        config = config.outne(OutputDrive::OutNe01);
+        assert_eq!(config.mode2.bits, 0b0000_0101); // Per 7.3.1
+        config = config.outne(OutputDrive::OutNe10);
+        assert_eq!(config.mode2.bits, 0b0000_0110); // Per 7.3.1
     }
 }
 
@@ -239,6 +365,10 @@ where
 
     /// Read a register
     fn read(&mut self, register: u8) -> Result<u8, E>;
+
+    fn read_duty(&mut self, ch: Self::Channels) -> Result<u8, E> {
+        self.read(Self::PWM0 + ch.get_offs())
+    }
 
     /// Write a register
     fn write(&mut self, register: u8, value: u8) -> Result<(), E>;
@@ -328,6 +458,9 @@ macro_rules! device {
         impl<I2C, E> $name<I2C>
             where I2C: i2c::Write<Error = E> + i2c::Read<Error = E>{
 
+            /// New LED driver
+            ///
+            /// *Note: Does not take driver out of __sleep__ mode*
             pub fn new(i2c: I2C, address: Address) -> Self {
                 $name {
                     i2c,
@@ -335,10 +468,51 @@ macro_rules! device {
                 }
             }
 
+            /// New LED driver
             pub fn new_config(i2c: I2C, address: Address, conf: Config) -> Result<Self, E> {
                 let mut pca = Self::new(i2c, address);
                 pca.write_config(conf)?;
                 Ok(pca)
+            }
+        }
+
+        #[cfg(feature="embedded-hal-pwm")]
+        impl<I2C, E, T: PCA963X<I2C, E>> hal::Pwm for T
+        where
+            I2C: i2c::Write<Error = E> + i2c::Read<Error = E>
+        {
+            type Channel = T::Channels;
+            type Time = ();
+            type Duty = u8;
+
+            fn disable(&mut self, channel: Self::Channel) {
+                self.write_out(channel, LedOut::FullyOff).unwrap_or_default()
+            }
+
+            fn enable(&mut self, channel: Self::Channel) {
+                self.write_out(channel, LedOut::Pwm).unwrap_or_default()
+            }
+
+            fn get_period(&self) -> Self::Time {
+                ()
+            }
+
+            fn get_duty(&self, channel: Self::Channel) -> Self::Duty {
+                //self.read_duty(channel).unwrap_or(0)
+                0
+            }
+
+            fn get_max_duty(&self) -> Self::Duty {
+                255u8
+            }
+
+            fn set_duty(&mut self, channel: Self::Channel, duty: Self::Duty) {
+                self.write_duty(channel, duty).unwrap_or_default()
+            }
+
+            fn set_period<P>(&mut self, _period: P) where
+                P: Into<Self::Time> {
+
             }
         }
     };
