@@ -58,6 +58,30 @@ impl Address {
     }
 }
 
+#[cfg(test)]
+mod address_tests {
+    use super::*;
+
+    #[test]
+    fn test_default_address() {
+        assert_eq!(Address::_8Pin.address(), 0x62);
+    }
+
+    #[test]
+    fn test_10pin_address() {
+        assert_eq!(Address::_10Pin{a0: false, a1: false}.address(), 0x60);
+        assert_eq!(Address::_10Pin{a0: true, a1: false}.address(), 0x61);
+        assert_eq!(Address::_10Pin{a0: false, a1: true}.address(), 0x62);
+        assert_eq!(Address::_10Pin{a0: true, a1: true}.address(), 0x63);
+
+    }
+
+    #[test]
+    fn test_custom_address() {
+        assert_eq!(Address::Custom(0x1B).address(), 0x1B);
+    }
+}
+
 bitflags! {
     pub struct Mode1: u8 {
         const Sleep     = 0b0001_0000;
